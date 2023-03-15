@@ -49,17 +49,19 @@ class FuncInfo():
         m_state = proj.factory.blank_state(addr=self.__start)
         state_manager = proj.factory.simgr(m_state)
 
+        # Пустой хук на call
         def __skip_hook(skip_name):
             print(f"Skipping {skip_name}...")
 
-        # Расставляем хуки
-        for skip in self.__calls:
-            proj.hook(skip, __skip_hook(self.__calls[skip]['name']), length=self.__calls[skip]['skip_len'])
-
+        # Хук на rep, сокращающий его выполнение до 1 цикла
         class MyHook(angr.SimProcedure):
             def run(self):
                 print("Short rep...")
                 self.state.regs.ecx = 0x1
+
+        # Расставляем хуки
+        for skip in self.__calls:
+            proj.hook(skip, __skip_hook(self.__calls[skip]['name']), length=self.__calls[skip]['skip_len'])
 
         for rep in self.__reps:
             proj.hook(rep, MyHook(), length=self.__reps[rep])
@@ -68,18 +70,24 @@ class FuncInfo():
         while len(state_manager.active) > 0:
             state_manager.step()
             for state in state_manager.active:
+                print(state)
                 if state.scratch.ins_addr > fea.end:
                     break
                 for con in state.solver.constraints:
-                    # print(con)
+                    str_con = str(con)
+                    if len(str_con) > 100:
+                        print(f"Was at {state_buf}")
+                        print(f"Fall at {state}")
+                        print(f"as {str_con}")
                     self.__constraints.add(str(con))
+                state_buf = state
 
         # Удаляем на всякий случай
         del state_manager
         del m_state
 
     # Находим самую первую push инструкцию перед call
-    def findFirstPush(self, addr):
+    def __findFirstPush(self, addr):
         r_addr = addr
         current_ea = prev_head(addr, self.__start)
         while current_ea > self.__start:
@@ -91,25 +99,19 @@ class FuncInfo():
         return r_addr
 
     # Находим все вызовы других функции внутри текущей функции
-    def findCalls(self):
+    def findSkips(self):
         current_ea = self.__start
         while current_ea < self.__end:
-            mnemonic = print_insn_mnem(current_ea)
+            mnemonic = str(generate_disasm_line(current_ea, 0)).split(' ')[0]
             if mnemonic == 'call':
                 c_name = print_operand(current_ea, 0)
-                c_start = self.findFirstPush(current_ea)
+                c_start = self.__findFirstPush(current_ea)
                 self.__calls[c_start] = {'name': c_name, 'skip_len': next_head(current_ea) - c_start}
-            current_ea = next_head(current_ea, self.__end)
 
-    # Находим все инструкции rep
-    def findRep(self):
-        print("Find rep...")
-        current_ea = self.__start
-        while current_ea < self.__end:
-            mnem = generate_disasm_line(current_ea, 0)
-            if 'rep' in mnem:
+            if 'rep' in mnemonic:
                 n_head = next_head(current_ea, self.__end)
                 self.__reps[current_ea] = n_head - current_ea
+
             current_ea = next_head(current_ea, self.__end)
 
 ########################################################################################################
@@ -139,15 +141,18 @@ if __name__ == '__main__':
 
     funcs = collectFuncs()
 
-    # fea = get_func_by_name(funcs, "?func@@YAXH@Z")
-    # findCalls(fea)
+    # fea = get_func_by_name(funcs, "_RTC_AllocaHelper")
+    # fea.findRep()
 
     for fea in funcs:
-        fea.findCalls()
-        fea.findRep()
+        fea.findSkips()
 
     for fea in funcs:
         fea.collectConstraints()
+    #
+    # for fea in funcs:
+    #     print(fea)
 
-    for fea in funcs:
-        print(fea)
+    # TODO: Нужно детектить большие constraints, смотреть по какому адресу они произошли.
+    #  Ставить на этот адрес хук, пропускающий инструкцию, которая вызывает его
+    #  Надеяться, чтобы все было хорошо
