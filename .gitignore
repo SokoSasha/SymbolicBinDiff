@@ -1,0 +1,6 @@
+bin
+Lib
+Scripts
+share
+.idea
+pyvenv.cfg
