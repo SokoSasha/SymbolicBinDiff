@@ -1,11 +1,9 @@
 import angr
 import logging
+import re
 from idautils import *
 from idaapi import *
 from idc import *
-
-m_state = None
-state_manager = None
 
 class FuncInfo():
     def __init__(self, name, start, end):
@@ -28,6 +26,18 @@ class FuncInfo():
     def end(self):
         return self.__end
 
+    @property
+    def constr(self):
+        return self.__constraints
+
+    @property
+    def calls(self):
+        return self.__calls
+
+    @property
+    def reps(self):
+        return self.__reps
+
     def __str__(self):
         output = f"Function {self.__func_name} [{hex(self.__start)} : {hex(self.__end)}]\nConstraints:\n"
         for con in self.__constraints:
@@ -45,18 +55,18 @@ class FuncInfo():
 
     # Собираем данные символьным исполнением
     def collectConstraints(self):
-        print(f"\nDoing {self.name}...")
         m_state = proj.factory.blank_state(addr=self.__start)
         state_manager = proj.factory.simgr(m_state)
 
         # Пустой хук на call
         def __skip_hook(skip_name):
-            print(f"Skipping {skip_name}...")
+            # print(f"Skipping {skip_name}...")
+            pass
 
         # Хук на rep, сокращающий его выполнение до 1 цикла
         class MyHook(angr.SimProcedure):
             def run(self):
-                print("Short rep...")
+                # print("Short rep...")
                 self.state.regs.ecx = 0x1
 
         # Расставляем хуки
@@ -66,21 +76,52 @@ class FuncInfo():
         for rep in self.__reps:
             proj.hook(rep, MyHook(), length=self.__reps[rep])
 
+        # Находим места в constratints, где присутствует сравнение двух символьных переменных.
+        # Подобные сравнения приводят к долгой обработке
+        def findError(constr):
+            ops = ['==', '!=', '>=', '>', '<=', '<']
+
+            str_con = str(constr)[1:-1]
+            fin = [item.strip() for item in re.split('&&|\\|\\|', str_con) if item]
+
+            def stripVar(varia):
+                varia = varia.replace("{UNINITIALIZED}", '')
+                varia = varia.replace('(', '')
+                varia = varia.replace(')', '')
+                varia = re.sub(r'\[[^]]+\]', '', varia)
+                return varia
+
+            for f in fin:
+                # pos = next((i for i, c in enumerate(f) if c in ops), None)
+                for op in ops:
+                    if (pos := f.find(op)) != -1:
+                        break
+                if pos != None and '{UNINITIALIZED}' in f[:pos] and '{UNINITIALIZED}' in f[pos:]:
+                    left = {stripVar(p) for p in f[:pos].split() if '{UNINITIALIZED}' in p}
+                    right = {stripVar(p) for p in f[pos:].split() if '{UNINITIALIZED}' in p}
+                    return left | right
+
+            return None
+
         # Пошагово выполняем программу и сохраняем необходимые данные
-        while len(state_manager.active) > 0:
+        while state_manager.active:
             state_manager.step()
             for state in state_manager.active:
-                print(state)
-                if state.scratch.ins_addr > fea.end:
-                    break
                 for con in state.solver.constraints:
-                    str_con = str(con)
-                    if len(str_con) > 100:
-                        print(f"Was at {state_buf}")
-                        print(f"Fall at {state}")
-                        print(f"as {str_con}")
+                    if '{UNINITIALIZED}' in str(con):
+                        if (var:=findError(con)) != None:
+                            change = next(filter(lambda lst: next(iter(var)) in str(lst[1]), state.solver.get_variables()), None)[0]
+                            print(f"{change} is {type(change)}")
+                            # print(f"{change[0]} {change[1]}")
+                            # TODO: Как изменить переменную change??????
+                            print(x:=state.solver.get_variables(change[0], change[1]))
+                            for y in x:
+                                print(y)
+                                state.solver.eval(y, 1)
+                                print(state.solver.eval(y))
+                            raise Exception("Comparing two uninitialized variables")
+
                     self.__constraints.add(str(con))
-                state_buf = state
 
         # Удаляем на всякий случай
         del state_manager
@@ -122,17 +163,16 @@ def get_func_by_name(func_list, name):
     print("No such function")
 
 def collectFuncs():
-    print("Collecting functions...")
     funcsList = []
     for ea in Functions():
         if not get_func_flags(ea) & (FUNC_LIB | FUNC_THUNK | FUNC_FAR | FUNC_NORET):
             end_ea = get_func_attr(ea, FUNCATTR_END) - 0x1  # Конец функции
             name_ea = ida_funcs.get_func_name(ea)  # Имя функции
             funcsList.append(FuncInfo(name_ea, ea, end_ea))
-    print("Done!")
     return funcsList
 
 if __name__ == '__main__':
+    print("Start...")
     proj = angr.Project(get_input_file_path(), load_options={'auto_load_libs': False},
                         main_opts={'base_addr': get_imagebase()})
 
@@ -152,7 +192,3 @@ if __name__ == '__main__':
     #
     # for fea in funcs:
     #     print(fea)
-
-    # TODO: Нужно детектить большие constraints, смотреть по какому адресу они произошли.
-    #  Ставить на этот адрес хук, пропускающий инструкцию, которая вызывает его
-    #  Надеяться, чтобы все было хорошо
