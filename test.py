@@ -1,6 +1,7 @@
 import angr
 import logging
 import re
+import time
 from idautils import *
 from idaapi import *
 from idc import *
@@ -11,6 +12,7 @@ class FuncInfo():
         self.__start = start
         self.__end = end
         self.__constraints = set()
+        self.__mod_constr = set()
         self.__calls = dict()
         self.__reps = dict()
 
@@ -38,6 +40,24 @@ class FuncInfo():
     def reps(self):
         return self.__reps
 
+    def addCon(self, constr):
+        constr = str(constr)[1:-1]
+        constr = constr.replace('Bool', '')
+        self.__constraints.add(constr)
+
+    def formatCon(self):
+        vars = ['reg', 'mem', 'unconstrained']
+        result = {s for con in self.__constraints for s in con.split() if any(s.startswith(var) for var in vars)}
+        rename = {res: sum(con.count(res) for con in self.__constraints) for res in result}
+        rename = sorted(rename.items(), key=lambda x: x[1], reverse=True)
+
+        for i, (name, count) in enumerate(rename):
+            for con in self.__constraints:
+                if name in con:
+                    self.__constraints.remove(con)
+                    self.__constraints.add(con.replace(name, 'var' + str(i + 1), -1))
+
+
     def __str__(self):
         output = f"Function {self.__func_name} [{hex(self.__start)} : {hex(self.__end)}]\nConstraints:\n"
         for con in self.__constraints:
@@ -55,6 +75,9 @@ class FuncInfo():
 
     # Собираем данные символьным исполнением
     def collectConstraints(self):
+        print(f"Doing {self.__func_name}...")
+        self.findSkips()
+
         m_state = proj.factory.blank_state(addr=self.__start)
         state_manager = proj.factory.simgr(m_state)
 
@@ -102,27 +125,33 @@ class FuncInfo():
                     return left | right
 
             return None
-
+        time_start = time.time()
         # Пошагово выполняем программу и сохраняем необходимые данные
         while state_manager.active:
+            T = 0
             state_manager.step()
             for state in state_manager.active:
                 for con in state.solver.constraints:
-                    if '{UNINITIALIZED}' in str(con):
-                        if (var:=findError(con)) != None:
-                            change = next(filter(lambda lst: next(iter(var)) in str(lst[1]), state.solver.get_variables()), None)[0]
-                            print(f"{change} is {type(change)}")
-                            # print(f"{change[0]} {change[1]}")
-                            # TODO: Как изменить переменную change??????
-                            print(x:=state.solver.get_variables(change[0], change[1]))
-                            for y in x:
-                                print(y)
-                                state.solver.eval(y, 1)
-                                print(state.solver.eval(y))
-                            raise Exception("Comparing two uninitialized variables")
-
-                    self.__constraints.add(str(con))
-
+                    if str(con).count('{UNINITIALIZED}') >= 2 and (var:=findError(con)) != None:
+                        change_list = list(filter(lambda lst: next(iter(var)) in str(lst[1]), state.solver.get_variables()))
+                        change = None
+                        for elem in change_list:
+                            if 'reg' in str(elem):
+                                change = elem[1]
+                                break
+                        if change == None:
+                            change = change_list[0]
+                            change = change[1]
+                        num = state.solver.eval(change)
+                        state.solver.add(change == num)
+                    t = time.time()
+                    self.addCon(con)
+                    T += time.time() - t
+            if time.time() - time_start - T > 10:
+                print("Tooo looong... Aborting, sorry")
+                break
+        # print(self.__constraints)
+        self.formatCon()
         # Удаляем на всякий случай
         del state_manager
         del m_state
@@ -165,9 +194,9 @@ def get_func_by_name(func_list, name):
 def collectFuncs():
     funcsList = []
     for ea in Functions():
-        if not get_func_flags(ea) & (FUNC_LIB | FUNC_THUNK | FUNC_FAR | FUNC_NORET):
+        if not (get_func_flags(ea) & (FUNC_LIB | FUNC_THUNK | FUNC_FAR | FUNC_NORET) or 'RTC' in (name_ea:=ida_funcs.get_func_name(ea)) or name_ea.startswith('j_')):
             end_ea = get_func_attr(ea, FUNCATTR_END) - 0x1  # Конец функции
-            name_ea = ida_funcs.get_func_name(ea)  # Имя функции
+            # name_ea = ida_funcs.get_func_name(ea)  # Имя функции
             funcsList.append(FuncInfo(name_ea, ea, end_ea))
     return funcsList
 
@@ -183,9 +212,6 @@ if __name__ == '__main__':
 
     # fea = get_func_by_name(funcs, "_RTC_AllocaHelper")
     # fea.findRep()
-
-    for fea in funcs:
-        fea.findSkips()
 
     for fea in funcs:
         fea.collectConstraints()
