@@ -6,13 +6,50 @@ from idautils import *
 from idaapi import *
 from idc import *
 
+proj = None
+
+class FuncList():
+    """
+    Класс, для работы со списком функций исследуемого файла
+    """
+    def __init__(self):
+        proj = angr.Project(get_input_file_path(), load_options={'auto_load_libs': False}, main_opts={'base_addr': get_imagebase()})
+        self.__funcs, self.__len = self.__collect()
+
+    def __str__(self):
+        return str(self.__funcs)
+
+    def __repr__(self):
+        return f'FuncList({self.__funcs})'
+
+    def __len__(self):
+        return self.__len
+
+    def __getitem__(self, index):
+        return self.__funcs[index]
+
+    def __collect(self):
+        funcsList = []
+        for ea in Functions():
+            if not (get_func_flags(ea) & (FUNC_LIB | FUNC_THUNK | FUNC_FAR | FUNC_NORET)
+                    or 'RTC' in (name_ea := ida_funcs.get_func_name(ea))
+                    or name_ea.startswith('j_')):
+                end_ea = get_func_attr(ea, FUNCATTR_END) - 0x1  # Конец функции
+                # name_ea = ida_funcs.get_func_name(ea)  # Имя функции
+                funcsList.append(FuncInfo(name_ea, ea, end_ea))
+        return funcsList, len(funcsList)
+
+    def getByName(self, name):
+        for func in self.__funcs:
+            if func.name == name:
+                return func
+
 class FuncInfo():
     def __init__(self, name, start, end):
         self.__func_name = name
         self.__start = start
         self.__end = end
         self.__constraints = set()
-        self.__mod_constr = set()
         self.__calls = dict()
         self.__reps = dict()
 
@@ -99,7 +136,7 @@ class FuncInfo():
         for rep in self.__reps:
             proj.hook(rep, MyHook(), length=self.__reps[rep])
 
-        # Находим места в constratints, где присутствует сравнение двух символьных переменных.
+        # Находим места в constratints, где присутствует сравнение двух+ символьных переменных.
         # Подобные сравнения приводят к долгой обработке
         def findError(constr):
             ops = ['==', '!=', '>=', '>', '<=', '<']
@@ -125,6 +162,7 @@ class FuncInfo():
                     return left | right
 
             return None
+
         time_start = time.time()
         # Пошагово выполняем программу и сохраняем необходимые данные
         while state_manager.active:
@@ -134,6 +172,9 @@ class FuncInfo():
                 for con in state.solver.constraints:
                     if str(con).count('{UNINITIALIZED}') >= 2 and (var:=findError(con)) != None:
                         change_list = list(filter(lambda lst: next(iter(var)) in str(lst[1]), state.solver.get_variables()))
+                        if len(change_list) == 0:
+                            self.addCon(con)
+                            continue
                         change = None
                         for elem in change_list:
                             if 'reg' in str(elem):
@@ -142,12 +183,11 @@ class FuncInfo():
                         if change == None:
                             change = change_list[0]
                             change = change[1]
-                        num = state.solver.eval(change)
-                        state.solver.add(change == num)
+
                     t = time.time()
                     self.addCon(con)
                     T += time.time() - t
-            if time.time() - time_start - T > 10:
+            if time.time() - time_start - T > 7:
                 print("Tooo looong... Aborting, sorry")
                 break
         # print(self.__constraints)
@@ -201,20 +241,28 @@ def collectFuncs():
     return funcsList
 
 if __name__ == '__main__':
-    print("Start...")
-    proj = angr.Project(get_input_file_path(), load_options={'auto_load_libs': False},
-                        main_opts={'base_addr': get_imagebase()})
-
-    # Убираем WARNING сообщения
-    logger = logging.getLogger('angr').setLevel(logging.ERROR)
-
-    funcs = collectFuncs()
-
-    # fea = get_func_by_name(funcs, "_RTC_AllocaHelper")
-    # fea.findRep()
-
-    for fea in funcs:
-        fea.collectConstraints()
-    #
-    # for fea in funcs:
-    #     print(fea)
+    print("Go")
+    main_funcs = FuncList()
+    print("Over")
+    print(main_funcs)
+# if __name__ == '__main__':
+#     print("Start...")
+#     proj = angr.Project(get_input_file_path(), load_options={'auto_load_libs': False},
+#                         main_opts={'base_addr': get_imagebase()})
+#
+#     # Убираем WARNING сообщения
+#     logger = logging.getLogger('angr').setLevel(logging.ERROR)
+#
+#     # funcs = collectFuncs()
+#     funcs = FuncList()
+#
+#     # fea = get_func_by_name(funcs, "_RTC_AllocaHelper")
+#     # fea.findRep()
+#
+#     for fea in funcs:
+#         fea.collectConstraints()
+#     #
+#     # for fea in funcs:
+#     #     print(fea)
+#
+#     print("End!")
