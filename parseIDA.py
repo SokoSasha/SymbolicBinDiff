@@ -2,22 +2,32 @@ import angr
 import logging
 import re
 import time
+import json
 from idautils import *
 from idaapi import *
 from idc import *
 
-proj = None
 
 class FuncList():
     """
     Класс, для работы со списком функций исследуемого файла
     """
     def __init__(self):
+        global proj
         proj = angr.Project(get_input_file_path(), load_options={'auto_load_libs': False}, main_opts={'base_addr': get_imagebase()})
+        # Убираем WARNING сообщения
+        logging.getLogger('angr').setLevel(logging.ERROR)
         self.__funcs, self.__len = self.__collect()
 
+    @property
+    def funcs(self):
+        return self.__funcs
+
     def __str__(self):
-        return str(self.__funcs)
+        output = ""
+        for func in self.__funcs:
+            output += str(func) + '\n'
+        return output
 
     def __repr__(self):
         return f'FuncList({self.__funcs})'
@@ -29,6 +39,7 @@ class FuncList():
         return self.__funcs[index]
 
     def __collect(self):
+        print("Collect")
         funcsList = []
         for ea in Functions():
             if not (get_func_flags(ea) & (FUNC_LIB | FUNC_THUNK | FUNC_FAR | FUNC_NORET)
@@ -37,12 +48,21 @@ class FuncList():
                 end_ea = get_func_attr(ea, FUNCATTR_END) - 0x1  # Конец функции
                 # name_ea = ida_funcs.get_func_name(ea)  # Имя функции
                 funcsList.append(FuncInfo(name_ea, ea, end_ea))
+        print("Done!")
         return funcsList, len(funcsList)
 
     def getByName(self, name):
         for func in self.__funcs:
             if func.name == name:
                 return func
+
+    def to_dict(self):
+        func_dict = dict()
+        for func in self.__funcs:
+            func_dict[func.name] = list(func.constr)
+        return func_dict
+
+###############################################################################################################
 
 class FuncInfo():
     def __init__(self, name, start, end):
@@ -79,7 +99,7 @@ class FuncInfo():
 
     def addCon(self, constr):
         constr = str(constr)[1:-1]
-        constr = constr.replace('Bool', '')
+        constr = constr.replace('Bool ', '')
         self.__constraints.add(constr)
 
     def formatCon(self):
@@ -187,14 +207,18 @@ class FuncInfo():
                     t = time.time()
                     self.addCon(con)
                     T += time.time() - t
-            if time.time() - time_start - T > 7:
+            if (end_time:=time.time() - time_start - T) > 3 and len(self.__constraints) >= 10:
                 print("Tooo looong... Aborting, sorry")
                 break
-        # print(self.__constraints)
+            if end_time > 7:
+                print("Way tooo looong... Aborting, sorry")
+                break
         self.formatCon()
         # Удаляем на всякий случай
         del state_manager
         del m_state
+        print("Done!\n")
+
 
     # Находим самую первую push инструкцию перед call
     def __findFirstPush(self, addr):
@@ -225,44 +249,16 @@ class FuncInfo():
             current_ea = next_head(current_ea, self.__end)
 
 ########################################################################################################
-def get_func_by_name(func_list, name):
-    for func in func_list:
-        if func.name == name:
-            return func
-    print("No such function")
-
-def collectFuncs():
-    funcsList = []
-    for ea in Functions():
-        if not (get_func_flags(ea) & (FUNC_LIB | FUNC_THUNK | FUNC_FAR | FUNC_NORET) or 'RTC' in (name_ea:=ida_funcs.get_func_name(ea)) or name_ea.startswith('j_')):
-            end_ea = get_func_attr(ea, FUNCATTR_END) - 0x1  # Конец функции
-            # name_ea = ida_funcs.get_func_name(ea)  # Имя функции
-            funcsList.append(FuncInfo(name_ea, ea, end_ea))
-    return funcsList
 
 if __name__ == '__main__':
-    print("Go")
     main_funcs = FuncList()
-    print("Over")
-    print(main_funcs)
-# if __name__ == '__main__':
-#     print("Start...")
-#     proj = angr.Project(get_input_file_path(), load_options={'auto_load_libs': False},
-#                         main_opts={'base_addr': get_imagebase()})
-#
-#     # Убираем WARNING сообщения
-#     logger = logging.getLogger('angr').setLevel(logging.ERROR)
-#
-#     # funcs = collectFuncs()
-#     funcs = FuncList()
-#
-#     # fea = get_func_by_name(funcs, "_RTC_AllocaHelper")
-#     # fea.findRep()
-#
-#     for fea in funcs:
-#         fea.collectConstraints()
-#     #
-#     # for fea in funcs:
-#     #     print(fea)
-#
-#     print("End!")
+    for func in main_funcs:
+        func.collectConstraints()
+
+    with open(f"{get_input_file_path()}.json", 'w') as file:
+        print("Dumping")
+        func_dict = main_funcs.to_dict()
+        json.dump(func_dict, file, indent=2)
+        print("Done!")
+
+    del main_funcs
