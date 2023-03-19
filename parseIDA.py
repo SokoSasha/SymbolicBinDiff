@@ -13,6 +13,10 @@ class FuncList():
     Класс, для работы со списком функций исследуемого файла
     """
     def __init__(self):
+        """
+        Инициализируем angr проект как глобальную переменную, чтобы потом можно было использовать ее в парсинге функций
+        Отключаем лишние сообщения
+        """
         global proj
         proj = angr.Project(get_input_file_path(), load_options={'auto_load_libs': False}, main_opts={'base_addr': get_imagebase()})
         # Убираем WARNING сообщения
@@ -39,6 +43,11 @@ class FuncList():
         return self.__funcs[index]
 
     def __collect(self):
+        """
+        Функция поиска интересующих нас функций в файле
+
+        :return: Кортеж состоящий из информации о функциях и количестве функций
+        """
         print("Collect")
         funcsList = []
         for ea in Functions():
@@ -57,14 +66,25 @@ class FuncList():
                 return func
 
     def to_dict(self):
+        """
+        Преобразование информации о функции в словарь для последующего переноса в файл.
+
+        Эта информация в дальнейшем будет нужна для сравнения фукнций, поэтому оставляем только идентификаторы функции (названия и адрес),
+        а также условия, которые и будут сравниваться.
+
+        :return: Итоговый словарь
+        """
         func_dict = dict()
         for func in self.__funcs:
-            func_dict[func.name] = list(func.constr)
+            func_dict[func.name] = {'address': func.start, 'constraints': list(func.constr)}
         return func_dict
 
 ###############################################################################################################
 
 class FuncInfo():
+    """
+    Класс для хранения и обработки информации о конкретной функции
+    """
     def __init__(self, name, start, end):
         self.__func_name = name
         self.__start = start
@@ -98,11 +118,23 @@ class FuncInfo():
         return self.__reps
 
     def addCon(self, constr):
+        """
+        Функция добавления условия во множество в виде строки.
+        Лишние фрагменты обрезаются
+
+        :param constr: Условие
+        """
         constr = str(constr)[1:-1]
         constr = constr.replace('Bool ', '')
         self.__constraints.add(constr)
 
     def formatCon(self):
+        """
+        Функция для переименовая переменных в условии.
+
+        Имена назначаются в соответствии с частотой использования переменной. Это обеспечивает чуть более точное сравнение
+        в будущем.
+        """
         vars = ['reg', 'mem', 'unconstrained']
         result = {s for con in self.__constraints for s in con.split() if any(s.startswith(var) for var in vars)}
         rename = {res: sum(con.count(res) for con in self.__constraints) for res in result}
@@ -132,19 +164,32 @@ class FuncInfo():
 
     # Собираем данные символьным исполнением
     def collectConstraints(self):
+        """
+        Функция обработки функции.
+
+        Здесь выполняется поиск вызовов других функций, rep инструкций и выставление хуков на них.
+        После чего начинается сбор условий (constraints) функции. Если во время поиска находится момент, где сравниваются
+        две символьные переменные (что приводит к зацикливанию), то программа старается обойти этот момент
+
+        Если поиск затягивается, то программа заканчивает поиск
+        """
         print(f"Doing {self.__func_name}...")
         self.findSkips()
 
         m_state = proj.factory.blank_state(addr=self.__start)
         state_manager = proj.factory.simgr(m_state)
 
-        # Пустой хук на call
         def __skip_hook(skip_name):
+            """
+            Пустой хук на вызовы других функций. Это заставляет angr пропустить call
+            """
             # print(f"Skipping {skip_name}...")
             pass
 
-        # Хук на rep, сокращающий его выполнение до 1 цикла
         class MyHook(angr.SimProcedure):
+            """
+            Данный хук необходим для сокращения rep инструкций, которые angr не умеет перепрыгивать
+            """
             def run(self):
                 # print("Short rep...")
                 self.state.regs.ecx = 0x1
@@ -159,12 +204,24 @@ class FuncInfo():
         # Находим места в constratints, где присутствует сравнение двух+ символьных переменных.
         # Подобные сравнения приводят к долгой обработке
         def findError(constr):
+            """
+            Внутренняя функция поиска в функции элементов сравнения двух символьных переменных.
+            Если такой момент находится, то функция возвращает эти переменные
+
+            :param constr: Условие для проверки
+            :return: Проблемные переменные. Если таких нет, то None
+            """
             ops = ['==', '!=', '>=', '>', '<=', '<']
 
             str_con = str(constr)[1:-1]
             fin = [item.strip() for item in re.split('&&|\\|\\|', str_con) if item]
 
             def stripVar(varia):
+                """
+                Еще одна внутренняя функция, вычленяющая из условия только названия переменных
+                :param varia:
+                :return:
+                """
                 varia = varia.replace("{UNINITIALIZED}", '')
                 varia = varia.replace('(', '')
                 varia = varia.replace(')', '')
@@ -172,7 +229,6 @@ class FuncInfo():
                 return varia
 
             for f in fin:
-                # pos = next((i for i, c in enumerate(f) if c in ops), None)
                 for op in ops:
                     if (pos := f.find(op)) != -1:
                         break
@@ -191,6 +247,7 @@ class FuncInfo():
             for state in state_manager.active:
                 for con in state.solver.constraints:
                     if str(con).count('{UNINITIALIZED}') >= 2 and (var:=findError(con)) != None:
+                        # Поиск проблемных переменных по имени
                         change_list = list(filter(lambda lst: next(iter(var)) in str(lst[1]), state.solver.get_variables()))
                         if len(change_list) == 0:
                             self.addCon(con)
@@ -203,6 +260,9 @@ class FuncInfo():
                         if change == None:
                             change = change_list[0]
                             change = change[1]
+
+                        num = state.solver.eval(change)
+                        state.solver.add(change == num)
 
                     t = time.time()
                     self.addCon(con)
@@ -262,3 +322,4 @@ if __name__ == '__main__':
         print("Done!")
 
     del main_funcs
+    del proj
