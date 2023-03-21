@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import filedialog
 import os
 from idaapi import get_input_file_path
+import time
 
 class Funcs():
 	def __init__(self, file_name):
@@ -115,11 +116,7 @@ class FuzzyCmp():
 		return -neg_matrix[row_ind, col_ind].sum()/max(neg_matrix.shape)
 
 	def __str__(self):
-		output = self.__name1 + ' x ' + self.__name2 + ':\n'
-		# for row in self.__table:
-		# 	for item in row:
-		# 		output += "{:<8}".format(item)
-		# 	output += '\n'
+		output = self.__name1 + ' at ' + hex(self.__addr1) + ' x ' + self.__name2 + ' at ' + hex(self.__addr2) + ':\n'
 		output += "Total alikeness score: " + str(round(self.__total * 100, 2)) + '%\n'
 
 		return output
@@ -154,6 +151,7 @@ def chooseFile():
 		return None
 
 if __name__ == '__main__':
+	tt = time.time()
 	file1 = get_input_file_path() + '.json'
 	file2 = chooseFile()
 	if file2 == None:
@@ -165,27 +163,40 @@ if __name__ == '__main__':
 	funcs2 = Funcs(file2)
 
 	cmpList = list()
+	otherDiff = list()
+	tooUnlike = list()
+
+	i = 0
+	all = len(funcs1) * len(funcs2)
+	f_all = f"{all:,}"
 
 	for func1 in funcs1.items():
 		for func2 in funcs2.items():
+			i+=1
+			f_i = f"{i:,}"
+			print(f"{f_i}/{f_all}\t({round(100 * i / all, 2)} %)")
 			len1 = len(func1[1]['constraints'])
 			len2 = len(func2[1]['constraints'])
 
 			# Если у функций нет условий, то их следует рассматривать по другим критериям
 			if len1 == 0 and len2 == 0:
-				mess = func1[0] + " and " + func2[0] + " needs another type of diffing"
-				cmpList.append(mess)
+				mess = func1[0] + " and " + func2[0]
+				otherDiff.append(mess)
 				continue
 
 			# Если у двух функций достаточно разное количество условий, то предполагается, что они достаточно разные
 			if abs(len1 - len2)/max(len1, len2) > 0.6:
-				mess = func1[0] + " and " + func2[0] + " are probably too different"
-				cmpList.append(mess)
+				mess = func1[0] + " and " + func2[0]
+				tooUnlike.append(mess)
 				continue
 
 			# Все окей, можно составлять таблицу
 			cmpList.append(FuzzyCmp(func1, func2))
 
-	for cmp in cmpList:
-		if type(cmp) != str:
-			print(cmp)
+	sortedCmpList = sorted(cmpList, key=lambda x: x.total, reverse=True)
+
+	print("Alike functions:")
+	for cmp in sortedCmpList:
+		print(cmp)
+
+	print(f"Total time: {tt-time.time()}")

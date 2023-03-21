@@ -186,6 +186,7 @@ class FuncInfo():
             # print(f"Skipping {skip_name}...")
             pass
 
+
         class MyHook(angr.SimProcedure):
             """
             Данный хук необходим для сокращения rep инструкций, которые angr не умеет перепрыгивать
@@ -279,19 +280,6 @@ class FuncInfo():
         del m_state
         print("Done!\n")
 
-
-    # Находим самую первую push инструкцию перед call
-    def __findFirstPush(self, addr):
-        r_addr = addr
-        current_ea = prev_head(addr, self.__start)
-        while current_ea > self.__start:
-            mnem = print_insn_mnem(current_ea)
-            if mnem == 'push':
-                r_addr = current_ea
-            else:
-                break
-        return r_addr
-
     # Находим все вызовы других функции внутри текущей функции
     def findSkips(self):
         current_ea = self.__start
@@ -299,7 +287,7 @@ class FuncInfo():
             mnemonic = str(generate_disasm_line(current_ea, 0)).split(' ')[0]
             if mnemonic == 'call':
                 c_name = print_operand(current_ea, 0)
-                c_start = self.__findFirstPush(current_ea)
+                c_start = current_ea
                 self.__calls[c_start] = {'name': c_name, 'skip_len': next_head(current_ea) - c_start}
 
             if 'rep' in mnemonic:
@@ -311,9 +299,13 @@ class FuncInfo():
 ########################################################################################################
 
 if __name__ == '__main__':
+    tt = time.time()
     main_funcs = FuncList()
+    i = 1
     for func in main_funcs:
+        print(f"{i}/{len(main_funcs)}")
         func.collectConstraints()
+        i+=1
 
     with open(f"{get_input_file_path()}.json", 'w') as file:
         print("Dumping")
@@ -323,3 +315,5 @@ if __name__ == '__main__':
 
     del main_funcs
     del proj
+
+    print(f"Total time: {time.time() - tt}")
